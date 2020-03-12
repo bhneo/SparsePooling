@@ -55,11 +55,11 @@ def dynamic_routing(votes,
     return poses, probs, bs, cs
 
 
-def adjust_dynamic_routing(votes,
-                           num_routing=3,
-                           softmax_in=False,
-                           temper=1.0,
-                           activation='squash'):
+def norm_routing(votes,
+                 num_routing=3,
+                 softmax_in=False,
+                 temper=1.0,
+                 activation='squash'):
     """ Dynamic routing algorithm.
     Args:
         votes: a tensor with shape [batch_size, ..., num_in, num_out, out_dims]
@@ -97,19 +97,22 @@ def adjust_dynamic_routing(votes,
         cs.append(c)
 
     pose = tf.reduce_sum(c * votes, axis=-3, keepdims=True)
-    pose, prob = activation_fn(pose, axis=-1)  # get [batch_size, ..., 1, num_out, out_dim]
+    prob = None
+    if activation_fn:
+        pose, prob = activation_fn(pose, axis=-1)  # get [batch_size, ..., 1, num_out, out_dim]
     poses.append(pose)
-    probs.append(prob)
+    if prob:
+        probs.append(prob)
     return poses, probs, bs, cs
 
 
-def coupling_entropy(coupling, axis=-2):
+def coupling_entropy(coupling, axis=-3):
     entropy = tf.reduce_sum(-coupling * tf.math.log(coupling+1e-9), axis=axis)
     return entropy
 
 
-def activated_entropy(coupling, child, axis=-2):
-    if len(child.get_shape().as_list()) != 3:
+def activated_entropy(coupling, child, axis=-3):
+    if child is None or len(child.get_shape().as_list()) != 3:
         child = 1
     entropy = child * coupling_entropy(coupling, axis)
     return entropy

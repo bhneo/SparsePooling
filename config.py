@@ -44,7 +44,9 @@ params.model.resblock = '333'
 params.model.backbone = 'VGG16'
 params.model.fine = 3
 params.model.pool = 'avg'
-params.model.in_norm_fn = 'squash'
+params.model.in_norm = 'squash'
+params.model.in_fn = 'squash'
+params.model.out_fn = 'squash'
 params.model.resnet = 'v2'
 
 
@@ -71,7 +73,9 @@ def parse_args():
     parser.add_argument('--backbone', default=params.model.backbone, help='backbones')
     parser.add_argument('--fine', default=params.model.fine, type=int, help='fine tune last layers')
     parser.add_argument('--pool', default=params.model.pool, help='pool')
-    parser.add_argument('--in_norm_fn', default=params.model.in_norm_fn, help='')
+    parser.add_argument('--in_fn', default=params.model.in_fn, help='')
+    parser.add_argument('--out_fn', default=params.model.out_fn, help='')
+    parser.add_argument('--in_norm', default=params.model.in_norm, help='')
     parser.add_argument('--routing', default=params.routing.type, help='')
     parser.add_argument('--temper', default=params.routing.temper, help='the lambda in softmax')
     parser.add_argument('--iter_num', default=params.routing.iter_num, help='the iter num of routing')
@@ -102,7 +106,9 @@ def build_config(args, build_params):
     build_params.model.pool = args.pool
     build_params.model.backbone = args.backbone
     build_params.model.fine = args.fine
-    build_params.model.in_norm_fn = args.in_norm_fn
+    build_params.model.in_fn = utils.str2bool(args.in_fn)
+    build_params.model.out_fn = utils.str2bool(args.out_fn)
+    build_params.model.in_norm = utils.str2bool(args.in_norm)
     build_params.model.resnet = args.resnet
     build_params.routing.type = args.routing
     build_params.routing.temper = float(args.temper)

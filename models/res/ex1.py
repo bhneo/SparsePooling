@@ -19,7 +19,7 @@ BATCH_NORM_DECAY = 0.99
 
 kernel_regularizer = keras.regularizers.l2(WEIGHT_DECAY)
 kernel_initializer = keras.initializers.he_normal()
-BASE_NAME = 'ex4_2'
+BASE_NAME = 'ex1'
 
 
 def build_model_name(params):
@@ -27,11 +27,14 @@ def build_model_name(params):
     model_name += '_b{}'.format(params.model.resblock)
     model_name += '_{}'.format(params.routing.type)
     if params.routing.type == 'DR' or params.routing.type == 'EM':
-        model_name += '_iter{}'.format(params.routing.iter_num)
-        model_name += '_temper{}'.format(params.routing.temper)
-        model_name += '_atoms{}'.format(params.caps.atoms)
+        model_name += '_i{}'.format(params.model.in_fn)
+        model_name += '_o{}'.format(params.model.out_fn)
+        model_name += '_in{}'.format(params.model.in_norm)
+        model_name += '_i{}'.format(params.routing.iter_num)
+        model_name += '_t{}'.format(params.routing.temper)
+        model_name += '_a{}'.format(params.caps.atoms)
 
-    model_name += '_trial{}'.format(str(params.training.idx))
+    model_name += '_tr{}'.format(str(params.training.idx))
 
     if params.dataset.flip:
         model_name += '_flip'
@@ -41,12 +44,12 @@ def build_model_name(params):
 
 
 def get_loss_opt(type):
-    if type == 'DR' or type == 'EM':
-        loss = losses.MarginLoss(upper_margin=0.9, bottom_margin=0.1, down_weight=0.5)
-        optimizer = keras.optimizers.Adam()
-    else:
-        loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        optimizer = keras.optimizers.SGD(0.1)
+    # if type == 'DR' or type == 'EM':
+    #     loss = losses.MarginLoss(upper_margin=0.9, bottom_margin=0.1, down_weight=0.5)
+    #     optimizer = keras.optimizers.Adam()
+    # else:
+    loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    optimizer = keras.optimizers.SGD(0.1)
     return loss, optimizer
 
 
@@ -55,6 +58,9 @@ def build_model(shape, num_out, params):
     model_name = build_model_name(params)
     probs, tensor_log = build(inputs, num_out,
                               params.routing.type,
+                              params.model.in_fn,
+                              params.model.out_fn,
+                              params.model.in_norm,
                               params.routing.iter_num,
                               params.routing.temper,
                               params.caps.atoms,
@@ -74,7 +80,7 @@ def build_model(shape, num_out, params):
     return model, tensor_log
 
 
-def build(inputs, num_out, routing, iter_num, temper, atoms, resblock):
+def build(inputs, num_out, routing, in_fn, out_fn, in_norm, iter_num, temper, atoms, resblock):
     log = utils.TensorLog()
     resblock = utils.parse_resblock(resblock)
     backbone = res_blocks.build_resnet_backbone(inputs=inputs, repetitions=resblock, layer_num=0,
@@ -85,62 +91,62 @@ def build(inputs, num_out, routing, iter_num, temper, atoms, resblock):
                                                 bn_axis=-1, momentum=BATCH_NORM_DECAY, epsilon=BATCH_NORM_EPSILON,
                                                 version='v2')
     log.add_hist('backbone', backbone)
+    shape = backbone.get_shape().as_list()
     if routing == 'avg':
         pool = keras.layers.GlobalAveragePooling2D()(backbone)
-        output = keras.layers.Dense(num_out)(pool)
     elif routing == 'max':
         pool = keras.layers.GlobalMaxPooling2D()(backbone)
-        output = keras.layers.Dense(num_out)(pool)
-    elif routing == 'DR':
-        child_pose, child_prob = layers.PrimaryCapsule(kernel_size=3,
-                                                       strides=2,
-                                                       padding='same',
-                                                       groups=8,
-                                                       use_bias=True,
-                                                       atoms=8,
-                                                       activation='squash',
-                                                       kernel_initializer=kernel_initializer,
-                                                       kernel_regularizer=kernel_regularizer)(backbone)
-        log.add_hist('child_activation', child_prob)
-        log.add_hist('child_pose', child_pose)
-        transformed_caps = layers.CapsuleTransformDense(num_out=num_out,
-                                                        out_atom=atoms,
-                                                        share_weights=False,
-                                                        initializer=keras.initializers.glorot_normal(),
-                                                        regularizer=kernel_regularizer)(child_pose)
-        parent_poses, parent_probs, cs = layers.DynamicRouting(num_routing=iter_num,
-                                                               softmax_in=False,
-                                                               temper=temper,
-                                                               activation='squash',
-                                                               pooling=False,
-                                                               log=log)((transformed_caps, child_prob))
-        log.add_hist('parent_activation', parent_probs[-1])
-        log.add_hist('parent_poses', parent_poses[-1])
-        output = parent_probs[-1]
-    elif routing == 'EM':
-        child_pose, child_prob = layers.PrimaryCapsule(kernel_size=3,
-                                                       strides=2,
-                                                       padding='same',
-                                                       groups=8,
-                                                       use_bias=True,
-                                                       atoms=8,
-                                                       activation='sigmoid',
-                                                       kernel_initializer=kernel_initializer,
-                                                       kernel_regularizer=kernel_regularizer)(backbone)
-        log.add_hist('child_activation', child_prob)
-        log.add_hist('child_pose', child_pose)
-        transformed_caps = layers.CapsuleTransformDense(num_out=num_out,
-                                                        out_atom=atoms,
-                                                        share_weights=False,
-                                                        initializer=keras.initializers.glorot_normal(),
-                                                        regularizer=kernel_regularizer)(child_pose)
-        parent_poses, parent_probs, cs = layers.EMRouting(num_routing=iter_num,
-                                                          temper=temper,
-                                                          log=log)((transformed_caps, child_prob))
-        log.add_hist('parent_activation', parent_probs[-1])
-        log.add_hist('parent_poses', parent_poses[-1])
-        output = parent_probs[-1]
+    else:
+        child = layers.CapsuleGroups(height=shape[1], width=shape[2], channel=shape[3],
+                                     atoms=atoms,
+                                     norm=in_norm,
+                                     activation=in_fn,
+                                     initializer=kernel_initializer,
+                                     regularizer=kernel_regularizer,
+                                     log=log)(backbone)
+        if routing == 'DR':
+            parent_poses, parent_probs, cs = layers.DynamicRouting(num_routing=iter_num,
+                                                                   softmax_in=True,
+                                                                   temper=temper,
+                                                                   activation=out_fn,
+                                                                   log=log)(child)
+            pool = keras.layers.Reshape([shape[3]])(parent_poses[-1])
+        elif routing == 'NR':
+            parent = layers.NormRouting(num_routing=iter_num,
+                                        softmax_in=True,
+                                        temper=temper,
+                                        activation=out_fn,
+                                        log=log)(child)
+            pool = keras.layers.Reshape([shape[3]])(parent[0][-1])
+        elif routing == 'EM':
+            parent_poses, parent_probs, cs = layers.EMRouting(num_routing=iter_num,
+                                                              softmax_in=True,
+                                                              temper=temper,
+                                                              log=log)(child)
+            pool = keras.layers.Reshape([shape[3]])(parent_poses[-1])
+
+    output = keras.layers.Dense(num_out)(pool)
     return output, log
+
+
+def test_build():
+    inputs = keras.Input(shape=(32, 32, 3))
+    # inputs = tf.random.normal([128, 32, 32, 3])
+    probs, tensor_log = build(inputs, 10,
+                              'NR',
+                              None,
+                              None,
+                              None,
+                              1,
+                              1,
+                              16,
+                              '333')
+    model = keras.Model(inputs=inputs, outputs=probs, name='')
+    loss, optimizer = get_loss_opt('')
+    model.compile(optimizer=optimizer,
+                  loss=loss,
+                  metrics=[])
+    model.summary()
 
 
 def get_norm_fn(dataset):
@@ -241,13 +247,15 @@ def get_input_set(dataset):
     return data_shape, num_out, flip, crop
 
 
-def get_model_dir(dataset, log='log', resblocks='333', routing='DR', iter_num=10, temper=1.0, atoms=16, idx=1):
+def get_model_dir(dataset, log='log', resblocks='333',
+                  routing='DR', in_fn=None, out_fn=None, in_norm=None,
+                  iter_num=10, temper=1.0, atoms=16, idx=1):
     data_shape, num_out, flip, crop = get_input_set(dataset)
     model_dir = '{}/{}/{}_b{}_{}'.format(log, dataset, BASE_NAME, resblocks, routing)
     if routing == 'max' or routing == 'avg':
-        model_dir += '_trial{}'.format(idx)
+        model_dir += '_tr{}'.format(idx)
     else:
-        model_dir += '_iter{}_temper{}_atoms{}_trial{}'.format(iter_num, temper, atoms, idx)
+        model_dir += '_i{}_o{}_in{}_i{}_t{}_a{}_tr{}'.format(in_fn, out_fn, in_norm, iter_num, temper, atoms, idx)
     if flip:
         model_dir += '_flip'
     if crop:
@@ -258,11 +266,16 @@ def get_model_dir(dataset, log='log', resblocks='333', routing='DR', iter_num=10
     return model_dir, data_shape, num_out, flip, crop
 
 
-def load_model(data_shape, model_dir, num_out, routing, iter_num=10, temper=1.0, atoms=16, resblocks='333', input_norm=None):
+def load_model(data_shape, model_dir, num_out,
+               routing, in_fn, out_fn, in_norm,
+               iter_num=10, temper=1.0, atoms=16, resblocks='333', input_norm=None):
     inputs = keras.Input(data_shape)
     probs, log = build(inputs=inputs if input_norm is None else layers.InputNorm(input_norm)(inputs),
                        num_out=num_out,
                        routing=routing,
+                       in_fn=in_fn,
+                       out_fn=out_fn,
+                       in_norm=in_norm,
                        iter_num=iter_num,
                        temper=temper,
                        atoms=atoms,
@@ -273,20 +286,26 @@ def load_model(data_shape, model_dir, num_out, routing, iter_num=10, temper=1.0,
 
 
 def evaluate_attack(epsilons, root='', log='log', dataset='kmnist', metric='acc', all_target=False,
-                    method='FGSM', steps=10,
+                    method='FGSM', steps=10, black_box=False,
                     resblocks='333',
-                    routing='DR', black_box=False, iter_num=10, temper=1.0, atoms=16, idx=1):
+                    routing='DR', in_fn=None, out_fn=None, in_norm=None,
+                    iter_num=10, temper=1.0, atoms=16, idx=1):
     model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root+log, resblocks=resblocks,
-                                                               routing=routing, iter_num=iter_num, temper=temper,
+                                                               routing=routing, in_fn=in_fn, out_fn=out_fn, in_norm=in_norm,
+                                                               iter_num=iter_num, temper=temper,
                                                                atoms=atoms, idx=idx)
-    model = load_model(data_shape, model_dir, num_out, routing, iter_num, temper, atoms,
+    model = load_model(data_shape, model_dir, num_out, routing,
+                       in_fn, out_fn, in_norm,
+                       iter_num, temper, atoms,
                        resblocks=resblocks, input_norm=get_norm_fn(dataset))
     if black_box:
         print('load black box source model')
         model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root + log, resblocks=resblocks,
                                                                    routing=routing, iter_num=iter_num, temper=temper,
                                                                    atoms=atoms, idx=2)
-        model_src = load_model(data_shape, model_dir, num_out, routing, iter_num, temper, atoms,
+        model_src = load_model(data_shape, model_dir, num_out, routing,
+                               in_fn, out_fn, in_norm,
+                               iter_num, temper, atoms,
                                resblocks=resblocks, input_norm=get_norm_fn(dataset))
     else:
         model_src = model
@@ -351,6 +370,9 @@ def do_adv(root):
                                 method=method,
                                 steps=10,
                                 routing=routing,
+                                in_fn=None,
+                                out_fn=None,
+                                in_norm=None,
                                 black_box=black_box,
                                 iter_num=2,
                                 temper=temper,
@@ -364,6 +386,9 @@ def compute_entropy(root,
                     log='log',
                     dataset='cifar10',
                     resblocks='333',
+                    in_fn=None,
+                    out_fn=None,
+                    in_norm=None,
                     iter_num=2,
                     activated=True,
                     temper=10.0,
@@ -372,7 +397,8 @@ def compute_entropy(root,
                     idx=1):
     import numpy as np
     model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root+log, resblocks=resblocks,
-                                                               routing=routing, iter_num=iter_num, temper=temper,
+                                                               routing=routing, in_fn=in_fn, out_fn=out_fn, in_norm=in_norm,
+                                                               iter_num=iter_num, temper=temper,
                                                                atoms=atoms, idx=idx)
     model = load_model(data_shape, model_dir, num_out, routing, iter_num, temper, atoms,
                        resblocks=resblocks, input_norm=None)
@@ -413,10 +439,13 @@ def compute_entropies(root):
                             dataset=dataset,
                             activated=False,
                             routing='EM',
+                            in_fn=None,
+                            out_fn=None,
+                            in_norm=None,
                             iter_num=2,
                             temper=temper,
                             atoms=16,
-                            idx=2)
+                            idx=1)
 
 
 if __name__ == "__main__":

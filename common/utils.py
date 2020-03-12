@@ -61,8 +61,9 @@ def str2bool(obj):
             return True
         elif obj == 'False':
             return False
-        else:
-            raise TypeError('Type not support:{}'.format(obj))
+        elif obj == 'None':
+            return None
+        return obj
     if isinstance(obj, bool):
         return obj
     else:

@@ -21,7 +21,7 @@ import numpy as np
 import tensorflow as tf
 
 
-def em_routing(votes_ij, activations_i, beta_a, beta_v, iter_routing, temper, final_lambda, epsilon, spatial_routing_matrix, log=None):
+def em_routing(votes_ij, activations_i, beta_a, beta_v, iter_routing, softmax_in, temper, final_lambda, epsilon, spatial_routing_matrix, log=None):
   """The EM routing between input capsules (i) and output capsules (j).
   
   See Hinton et al. "Matrix Capsules with EM Routing" for detailed description 
@@ -119,6 +119,7 @@ def em_routing(votes_ij, activations_i, beta_a, beta_v, iter_routing, temper, fi
                     var_j, 
                     spatial_routing_matrix,
                     epsilon,
+                    softmax_in,
                     temper)
 
 
@@ -294,7 +295,7 @@ def m_step(rr, votes, activations_i, beta_v, beta_a, inverse_temperature, epsilo
 
   
 # AG 26/06/2018: added var_j
-def e_step(votes_ij, activations_j, mean_j, stdv_j, var_j, spatial_routing_matrix, epsilon, temper):
+def e_step(votes_ij, activations_j, mean_j, stdv_j, var_j, spatial_routing_matrix, epsilon, softmax_in, temper):
   """The e-step in EM routing between input capsules (i) and output capsules (j).
   
   Update the assignment weights using in routung. The output capsules (j) 
@@ -358,7 +359,7 @@ def e_step(votes_ij, activations_j, mean_j, stdv_j, var_j, spatial_routing_matri
     zz = tf.reshape(zz, [-1, caps_in, caps_out])
     
     with tf.name_scope("softmax_across_parents") as scope:
-      zz_softmax = softmax_across_parents(zz, spatial_routing_matrix, temper)
+      zz_softmax = softmax_across_parents(zz, spatial_routing_matrix, softmax_in, temper)
       
     rr = tf.reshape(zz_softmax, [-1, caps_in, caps_out, 1])
     #----- End -----#
@@ -373,7 +374,7 @@ def e_step(votes_ij, activations_j, mean_j, stdv_j, var_j, spatial_routing_matri
     return rr
 
 
-def softmax_across_parents(probs_sparse, spatial_routing_matrix, temper=1.0):
+def softmax_across_parents(probs_sparse, spatial_routing_matrix, softmax_in, temper=1.0):
   """Softmax across all parent capsules including spatial and depth.
 
   Consider a sparse matrix of probabilities (1, 5, 5, 49, 8, 32)
@@ -408,7 +409,10 @@ def softmax_across_parents(probs_sparse, spatial_routing_matrix, temper=1.0):
   # e.g. (1, 8, 32)
   # (batch_size, child_caps, parent_caps)
   # Perform softmax across parent capsule dimension
-  parent_softmax = tf.nn.softmax(probs_sparse*temper, axis=-1)
+  if softmax_in:
+    parent_softmax = tf.nn.softmax(probs_sparse * temper, axis=-2)
+  else:
+    parent_softmax = tf.nn.softmax(probs_sparse * temper, axis=-1)
 
   # weights
   rr_updated = parent_softmax

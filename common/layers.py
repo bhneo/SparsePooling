@@ -17,7 +17,7 @@ from common import utils
 from common.ops import transformation
 from common.ops import ops as custom_ops
 from common.ops.em_routing import em_routing
-from common.ops.routing import dynamic_routing, adjust_dynamic_routing
+from common.ops.routing import dynamic_routing, norm_routing
 from common.ops.routing import activated_entropy
 from config import params as cfg
 
@@ -240,41 +240,50 @@ class CapsuleGroups(Layer):
                  width,
                  channel,
                  atoms,
-                 method='spatial',
+                 norm=None,
                  activation=None,
                  initializer=keras.initializers.glorot_normal(),
                  regularizer=None,
+                 log=None,
                  **kwargs):
         super(CapsuleGroups, self).__init__(**kwargs)
         self.height = height
         self.width = width
         self.channel = channel
         self.atoms = atoms
-        self.method = method
+        self.groups = self.channel // self.atoms
         self.activation = activation
+        self.norm = norm
+        self.log = log
         if activation == 'sigmoid':
-            self.activation_fn = None
-            self.conv = keras.layers.DepthwiseConv2D(kernel_size=(self.height, self.width),
-                                                     depthwise_initializer=initializer,
-                                                     depthwise_regularizer=regularizer)
-        else:
-            self.activation_fn = custom_ops.get_activation(activation)
+            self.conv = keras.layers.Conv2D(filters=self.groups,
+                                            kernel_size=1,
+                                            activation='sigmoid',
+                                            kernel_initializer=initializer,
+                                            kernel_regularizer=regularizer)
 
     def call(self, inputs, **kwargs):
-        if self.method == 'spatial':
-            group_num = self.channel // self.atoms
-            pose = tf.reshape(inputs, shape=[-1, self.height * self.width, group_num, self.atoms])
+        groups = tf.reshape(inputs, shape=[-1, self.height * self.width, self.groups, self.atoms])
+        prob = None
+        if self.norm is None:
+            pose = groups
         else:
+            pose, prob = custom_ops.get_activation(self.norm)(groups)
+        if self.activation is not None and self.activation != self.norm:
             if self.activation == 'sigmoid':
                 prob = self.conv(inputs)
-                prob = tf.squeeze(prob, -2)
-                prob = tf.sigmoid(prob)
-                prob = tf.transpose(prob, [0, 2, 1])
-            vote = tf.reshape(inputs, shape=[-1, self.height * self.width, self.channel])
-            pose = tf.transpose(vote, [0, 2, 1])
-        if self.activation_fn:
-            pose, prob = self.activation_fn(pose)
-        return pose, prob
+                prob = tf.reshape(prob, [-1, self.height * self.width, self.groups, 1])
+            else:
+                _, prob = custom_ops.get_activation(self.activation)(groups)
+
+        if self.log:
+            self.log.add_hist('child_pose', pose)
+            if prob:
+                self.log.add_hist('child_activation', prob)
+        if prob is None:
+            return pose
+        else:
+            return pose, prob
 
 
 class RoutingPooling(Layer):
@@ -333,7 +342,11 @@ class DynamicRouting(Layer):
         self.log = log
 
     def call(self, inputs, **kwargs):
-        (predictions, child_prob) = inputs
+        if isinstance(inputs, tuple) and len(inputs) == 2:
+            (predictions, child_prob) = inputs
+        else:
+            predictions = inputs
+            child_prob = None
         if self.pooling:
             predictions = tf.expand_dims(predictions, -2)
         poses, probs, bs, cs = dynamic_routing(predictions,
@@ -359,7 +372,7 @@ class DynamicRouting(Layer):
         return poses, probs, cs
 
 
-class AdjustDynamicRouting(Layer):
+class NormRouting(Layer):
     def __init__(self,
                  num_routing=1,
                  softmax_in=False,
@@ -368,7 +381,7 @@ class AdjustDynamicRouting(Layer):
                  pooling=False,
                  log=None,
                  **kwargs):
-        super(AdjustDynamicRouting, self).__init__(**kwargs)
+        super(NormRouting, self).__init__(**kwargs)
         self.num_routing = num_routing
         self.softmax_in = softmax_in
         self.temper = temper
@@ -377,35 +390,45 @@ class AdjustDynamicRouting(Layer):
         self.log = log
 
     def call(self, inputs, **kwargs):
-        (predictions, child_prob) = inputs
+        if isinstance(inputs, tuple) and len(inputs) == 2:
+            (predictions, child_prob) = inputs
+        else:
+            predictions = inputs
+            child_prob = None
         if self.pooling:
             predictions = tf.expand_dims(predictions, -2)
-        poses, probs, bs, cs = adjust_dynamic_routing(predictions,
-                                                      num_routing=self.num_routing,
-                                                      softmax_in=self.softmax_in,
-                                                      temper=self.temper,
-                                                      activation=self.activation)
+        poses, probs, bs, cs = norm_routing(predictions,
+                                            num_routing=self.num_routing,
+                                            softmax_in=self.softmax_in,
+                                            temper=self.temper,
+                                            activation=self.activation)
         for i in range(self.num_routing):
             if self.log:
                 self.log.add_hist('c{}'.format(i + 1), cs[i])
                 entropy = activated_entropy(cs[i], child_prob)
                 self.log.add_hist('rEntropy{}'.format(i + 1), entropy)
                 self.log.add_scalar('rAvgEntropy{}'.format(i + 1), tf.reduce_mean(entropy))
-        poses[0] = tf.squeeze(poses[0], axis=-3)
-        probs[0] = tf.squeeze(probs[0], axis=[-3, -1])
-
-        return poses, probs, cs
+            poses[i] = tf.squeeze(poses[i], axis=-3)
+            if probs:
+                if probs[i] is not None:
+                    probs[i] = tf.squeeze(probs[i], axis=[-3, -1])
+        if len(probs) == 0:
+            return poses, cs
+        else:
+            return poses, probs, cs
 
 
 class EMRouting(Layer):
     def __init__(self,
                  num_routing=3,
                  temper=1.0,
+                 softmax_in=False,
                  log=None,
                  **kwargs):
         super(EMRouting, self).__init__(**kwargs)
         self.num_routing = num_routing
         self.temper = temper
+        self.softmax_in = softmax_in
         self.log = log
 
     def build(self, input_shape):
@@ -465,12 +488,17 @@ class EMRouting(Layer):
     def call(self, inputs, **kwargs):
         # votes (bs, in, out, atom)
         # activations (bs, in, 1)
-        predictions, child_prob = inputs
+        if isinstance(inputs, tuple) and len(inputs) == 2:
+            (predictions, child_prob) = inputs
+        else:
+            predictions = inputs
+            child_prob = None
         poses, probs, cs = em_routing(predictions,
                                       child_prob,
                                       self.beta_a,
                                       self.beta_v,
                                       self.num_routing,
+                                      self.softmax_in,
                                       self.temper,
                                       final_lambda=0.01,
                                       epsilon=1e-9,
