@@ -8,56 +8,6 @@ import tensorflow as tf
 eps = 1e-10
 
 
-def get_activation(name):
-    if name == 'norm':
-        return vector_norm
-    elif name == 'norm_scale':
-        return vector_norm_scale
-    elif name == 'squash':
-        return squash
-    elif name == 'sum':
-        return vector_sum
-    elif name == 'mean':
-        return vector_mean
-    else:
-        return None
-
-
-def squash(inputs, axis=-1, ord="euclidean", name=None):
-    name = "squashing" if name is None else name
-    with tf.name_scope(name):
-        norm = tf.norm(inputs, ord=ord, axis=axis, keepdims=True)
-        norm_squared = tf.square(norm)
-        scalar_factor = norm_squared / (1 + norm_squared)
-        return scalar_factor * (inputs / (norm + eps)), scalar_factor
-
-
-def vector_norm(inputs, axis=-1, ord="euclidean", name=None):
-    name = "vector_norm" if name is None else name
-    with tf.name_scope(name):
-        norm = tf.norm(inputs, ord=ord, axis=axis, keepdims=True)
-        return inputs / (norm + eps), norm
-
-
-def vector_norm_scale(inputs, axis=-1, ord="euclidean", name=None):
-    name = "vector_norm_scale" if name is None else name
-    with tf.name_scope(name):
-        norm = tf.norm(inputs, ord=ord, axis=axis, keepdims=True)
-        return np.sqrt(inputs.get_shape().as_list()[axis])*inputs / (norm + eps), norm
-
-
-def vector_sum(inputs, axis=-1, name=None):
-    name = 'vector_sum' if name is None else name
-    with tf.name_scope(name):
-        return inputs, tf.reduce_sum(inputs, axis=axis, keepdims=True)
-
-
-def vector_mean(inputs, axis=-1, name=None):
-    name = 'vector_mean' if name is None else name
-    with tf.name_scope(name):
-        return inputs, tf.reduce_mean(inputs, axis=axis, keepdims=True)
-
-
 def center(inputs, axis):
     m = tf.reduce_mean(inputs, axis=axis, keepdims=True)
     f = inputs - m

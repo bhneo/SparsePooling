@@ -22,20 +22,10 @@ params.training.steps = 9999999  # The number of training steps
 params.training.lr_steps = [30000, 40000]
 params.training.verbose = True
 params.training.log_steps = 1000
-params.training.idx = 1
 params.training.momentum = 0.9
 params.training.save_frequency = 10
 params.training.log = True
 params.training.whiten = 'zca'
-
-params.routing = EasyDict()
-params.routing.type = 'DR'
-params.routing.iter_num = 3  # number of iterations in routing algorithm
-params.routing.temper = 1  # the lambda in softmax
-
-params.caps = EasyDict()
-params.caps.parts = 64
-params.caps.atoms = 8  # number of atoms in a capsule
 
 params.model = EasyDict()
 params.model.name = ''
@@ -44,9 +34,6 @@ params.model.resblock = '333'
 params.model.backbone = 'VGG16'
 params.model.fine = 3
 params.model.pool = 'avg'
-params.model.in_norm = 'squash'
-params.model.in_fn = 'squash'
-params.model.out_fn = 'squash'
 params.model.resnet = 'v2'
 
 
@@ -60,7 +47,6 @@ def parse_args():
     parser.add_argument('--target', default=params.dataset.target, help='target')
     parser.add_argument('--flip', default=params.dataset.flip, help='dataset config')
     parser.add_argument('--crop', default=params.dataset.crop, help='dataset config')
-    parser.add_argument('--idx', default=1, help='the index of trial')
     parser.add_argument('--epochs', default=params.training.epochs, help='the total training epochs')
     parser.add_argument('--batch', default=params.training.batch_size, help='the training batch_size')
     parser.add_argument('--steps', default=params.training.steps, help='the total training steps')
@@ -72,15 +58,6 @@ def parse_args():
     parser.add_argument('--resnet', default=params.model.resnet, help='resnet version')
     parser.add_argument('--backbone', default=params.model.backbone, help='backbones')
     parser.add_argument('--fine', default=params.model.fine, type=int, help='fine tune last layers')
-    parser.add_argument('--pool', default=params.model.pool, help='pool')
-    parser.add_argument('--in_fn', default=params.model.in_fn, help='')
-    parser.add_argument('--out_fn', default=params.model.out_fn, help='')
-    parser.add_argument('--in_norm', default=params.model.in_norm, help='')
-    parser.add_argument('--routing', default=params.routing.type, help='')
-    parser.add_argument('--temper', default=params.routing.temper, help='the lambda in softmax')
-    parser.add_argument('--iter_num', default=params.routing.iter_num, help='the iter num of routing')
-    parser.add_argument('--parts', default=params.caps.parts, help='number of parts filters')
-    parser.add_argument('--atoms', default=params.caps.atoms, help='capsule atoms')
     arguments = parser.parse_args()
     build_params = build_config(arguments, params)
     return arguments, build_params
@@ -106,13 +83,5 @@ def build_config(args, build_params):
     build_params.model.pool = args.pool
     build_params.model.backbone = args.backbone
     build_params.model.fine = args.fine
-    build_params.model.in_fn = utils.str2bool(args.in_fn)
-    build_params.model.out_fn = utils.str2bool(args.out_fn)
-    build_params.model.in_norm = utils.str2bool(args.in_norm)
     build_params.model.resnet = args.resnet
-    build_params.routing.type = args.routing
-    build_params.routing.temper = float(args.temper)
-    build_params.routing.iter_num = int(args.iter_num)
-    build_params.caps.parts = int(args.parts)
-    build_params.caps.atoms = int(args.atoms)
     return build_params

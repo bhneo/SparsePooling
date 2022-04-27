@@ -5,10 +5,8 @@ sys.path.append(os.getcwd())
 
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
-from tensorflow import keras
 from common.inputs import data_input
-from common import layers, utils, train, res_blocks, losses, attacks
-from common.ops.routing import activated_entropy, coupling_entropy
+from common import layers, utils, train, res_blocks, attacks
 
 import config
 
@@ -17,24 +15,14 @@ WEIGHT_DECAY = 1e-4
 BATCH_NORM_EPSILON = 1e-3
 BATCH_NORM_DECAY = 0.99
 
-kernel_regularizer = keras.regularizers.l2(WEIGHT_DECAY)
-kernel_initializer = keras.initializers.he_normal()
+kernel_regularizer = tf.keras.regularizers.l2(WEIGHT_DECAY)
+kernel_initializer = tf.keras.initializers.he_normal()
 BASE_NAME = 'ex1'
 
 
 def build_model_name(params):
     model_name = BASE_NAME
     model_name += '_b{}'.format(params.model.resblock)
-    model_name += '_{}'.format(params.routing.type)
-    if params.routing.type == 'DR' or params.routing.type == 'EM':
-        model_name += '_i{}'.format(params.model.in_fn)
-        model_name += '_o{}'.format(params.model.out_fn)
-        model_name += '_in{}'.format(params.model.in_norm)
-        model_name += '_i{}'.format(params.routing.iter_num)
-        model_name += '_t{}'.format(params.routing.temper)
-        model_name += '_a{}'.format(params.caps.atoms)
-
-    model_name += '_tr{}'.format(str(params.training.idx))
 
     if params.dataset.flip:
         model_name += '_flip'
@@ -43,44 +31,33 @@ def build_model_name(params):
     return model_name
 
 
-def get_loss_opt(type):
-    # if type == 'DR' or type == 'EM':
-    #     loss = losses.MarginLoss(upper_margin=0.9, bottom_margin=0.1, down_weight=0.5)
-    #     optimizer = keras.optimizers.Adam()
-    # else:
-    loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-    optimizer = keras.optimizers.SGD(0.1)
+def get_loss_opt():
+    loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    optimizer = tf.keras.optimizers.SGD(0.1)
     return loss, optimizer
 
 
 def build_model(shape, num_out, params):
-    inputs = keras.Input(shape=shape)
+    inputs = tf.keras.Input(shape=shape)
     model_name = build_model_name(params)
     probs, tensor_log = build(inputs, num_out,
-                              params.routing.type,
-                              params.model.in_fn,
-                              params.model.out_fn,
-                              params.model.in_norm,
-                              params.routing.iter_num,
-                              params.routing.temper,
-                              params.caps.atoms,
                               params.model.resblock)
-    model = keras.Model(inputs=inputs, outputs=probs, name=model_name)
-    log_model = keras.Model(inputs=inputs, outputs=tensor_log.get_outputs(), name=model_name + '_log')
+    model = tf.keras.Model(inputs=inputs, outputs=probs, name=model_name)
+    log_model = tf.keras.Model(inputs=inputs, outputs=tensor_log.get_outputs(), name=model_name + '_log')
     tensor_log.set_model(log_model)
-    loss, optimizer = get_loss_opt(params.routing.type)
+    loss, optimizer = get_loss_opt()
     model.compile(optimizer=optimizer,
                   loss=loss,
                   metrics=[])
     model.summary()
-    lr_scheduler = keras.callbacks.LearningRateScheduler(schedule=lr_schedule, verbose=1)
+    lr_scheduler = tf.keras.callbacks.LearningRateScheduler(schedule=lr_schedule, verbose=1)
     lr_scheduler.set_model(model)
     callbacks = [lr_scheduler]
     model.callbacks = callbacks
     return model, tensor_log
 
 
-def build(inputs, num_out, routing, in_fn, out_fn, in_norm, iter_num, temper, atoms, resblock):
+def build(inputs, num_out, resblock):
     log = utils.TensorLog()
     resblock = utils.parse_resblock(resblock)
     backbone = res_blocks.build_resnet_backbone(inputs=inputs, repetitions=resblock, layer_num=0,
@@ -91,62 +68,9 @@ def build(inputs, num_out, routing, in_fn, out_fn, in_norm, iter_num, temper, at
                                                 bn_axis=-1, momentum=BATCH_NORM_DECAY, epsilon=BATCH_NORM_EPSILON,
                                                 version='v2')
     log.add_hist('backbone', backbone)
-    shape = backbone.get_shape().as_list()
-    if routing == 'avg':
-        pool = keras.layers.GlobalAveragePooling2D()(backbone)
-    elif routing == 'max':
-        pool = keras.layers.GlobalMaxPooling2D()(backbone)
-    else:
-        child = layers.CapsuleGroups(height=shape[1], width=shape[2], channel=shape[3],
-                                     atoms=atoms,
-                                     norm=in_norm,
-                                     activation=in_fn,
-                                     initializer=kernel_initializer,
-                                     regularizer=kernel_regularizer,
-                                     log=log)(backbone)
-        if routing == 'DR':
-            parent_poses, parent_probs, cs = layers.DynamicRouting(num_routing=iter_num,
-                                                                   softmax_in=True,
-                                                                   temper=temper,
-                                                                   activation=out_fn,
-                                                                   log=log)(child)
-            pool = keras.layers.Reshape([shape[3]])(parent_poses[-1])
-        elif routing == 'NR':
-            parent = layers.NormRouting(num_routing=iter_num,
-                                        softmax_in=True,
-                                        temper=temper,
-                                        activation=out_fn,
-                                        log=log)(child)
-            pool = keras.layers.Reshape([shape[3]])(parent[0][-1])
-        elif routing == 'EM':
-            parent_poses, parent_probs, cs = layers.EMRouting(num_routing=iter_num,
-                                                              softmax_in=True,
-                                                              temper=temper,
-                                                              log=log)(child)
-            pool = keras.layers.Reshape([shape[3]])(parent_poses[-1])
-
-    output = keras.layers.Dense(num_out)(pool)
+    pool = tf.keras.layers.GlobalAveragePooling2D()(backbone)
+    output = tf.keras.layers.Dense(num_out)(pool)
     return output, log
-
-
-def test_build():
-    inputs = keras.Input(shape=(32, 32, 3))
-    # inputs = tf.random.normal([128, 32, 32, 3])
-    probs, tensor_log = build(inputs, 10,
-                              'NR',
-                              None,
-                              None,
-                              None,
-                              1,
-                              1,
-                              16,
-                              '333')
-    model = keras.Model(inputs=inputs, outputs=probs, name='')
-    loss, optimizer = get_loss_opt('')
-    model.compile(optimizer=optimizer,
-                  loss=loss,
-                  metrics=[])
-    model.summary()
 
 
 def get_norm_fn(dataset):
@@ -212,12 +136,10 @@ def main():
             trainer.evaluate(test_set)
     elif params.task == 'attack':
         do_adv(os.getcwd())
-    elif params.task == 'score':
-        compute_entropies(os.getcwd())
 
 
-def load_ckpt(model, model_dir, routing):
-    loss, optimizer = get_loss_opt(routing)
+def load_ckpt(model, model_dir):
+    loss, optimizer = get_loss_opt()
     model.compile(optimizer=optimizer,
                   loss=loss,
                   metrics=[])
@@ -247,15 +169,10 @@ def get_input_set(dataset):
     return data_shape, num_out, flip, crop
 
 
-def get_model_dir(dataset, log='log', resblocks='333',
-                  routing='DR', in_fn=None, out_fn=None, in_norm=None,
-                  iter_num=10, temper=1.0, atoms=16, idx=1):
+def get_model_dir(dataset, log='log', resblocks='333'):
     data_shape, num_out, flip, crop = get_input_set(dataset)
-    model_dir = '{}/{}/{}_b{}_{}'.format(log, dataset, BASE_NAME, resblocks, routing)
-    if routing == 'max' or routing == 'avg':
-        model_dir += '_tr{}'.format(idx)
-    else:
-        model_dir += '_i{}_o{}_in{}_i{}_t{}_a{}_tr{}'.format(in_fn, out_fn, in_norm, iter_num, temper, atoms, idx)
+    model_dir = '{}/{}/{}_b{}'.format(log, dataset, BASE_NAME, resblocks)
+
     if flip:
         model_dir += '_flip'
     if crop:
@@ -267,50 +184,31 @@ def get_model_dir(dataset, log='log', resblocks='333',
 
 
 def load_model(data_shape, model_dir, num_out,
-               routing, in_fn, out_fn, in_norm,
-               iter_num=10, temper=1.0, atoms=16, resblocks='333', input_norm=None):
-    inputs = keras.Input(data_shape)
+               resblocks='333', input_norm=None):
+    inputs = tf.keras.Input(data_shape)
     probs, log = build(inputs=inputs if input_norm is None else layers.InputNorm(input_norm)(inputs),
                        num_out=num_out,
-                       routing=routing,
-                       in_fn=in_fn,
-                       out_fn=out_fn,
-                       in_norm=in_norm,
-                       iter_num=iter_num,
-                       temper=temper,
-                       atoms=atoms,
                        resblock=resblocks)
-    model = keras.Model(inputs=inputs, outputs=probs, name='x')
-    load_ckpt(model, model_dir, routing)
+    model = tf.keras.Model(inputs=inputs, outputs=probs, name='x')
+    load_ckpt(model, model_dir)
     return model
 
 
 def evaluate_attack(epsilons, root='', log='log', dataset='kmnist', metric='acc', all_target=False,
                     method='FGSM', steps=10, black_box=False,
-                    resblocks='333',
-                    routing='DR', in_fn=None, out_fn=None, in_norm=None,
-                    iter_num=10, temper=1.0, atoms=16, idx=1):
-    model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root+log, resblocks=resblocks,
-                                                               routing=routing, in_fn=in_fn, out_fn=out_fn, in_norm=in_norm,
-                                                               iter_num=iter_num, temper=temper,
-                                                               atoms=atoms, idx=idx)
-    model = load_model(data_shape, model_dir, num_out, routing,
-                       in_fn, out_fn, in_norm,
-                       iter_num, temper, atoms,
+                    resblocks='333'):
+    model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root+log, resblocks=resblocks)
+    model = load_model(data_shape, model_dir, num_out,
                        resblocks=resblocks, input_norm=get_norm_fn(dataset))
     if black_box:
         print('load black box source model')
-        model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root + log, resblocks=resblocks,
-                                                                   routing=routing, iter_num=iter_num, temper=temper,
-                                                                   atoms=atoms, idx=2)
-        model_src = load_model(data_shape, model_dir, num_out, routing,
-                               in_fn, out_fn, in_norm,
-                               iter_num, temper, atoms,
+        model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root + log, resblocks=resblocks)
+        model_src = load_model(data_shape, model_dir, num_out,
                                resblocks=resblocks, input_norm=get_norm_fn(dataset))
     else:
         model_src = model
 
-    loss, _ = get_loss_opt(routing)
+    loss, _ = get_loss_opt()
     _, test_set, info = data_input.build_dataset(dataset,
                                                  path=root + 'data',
                                                  parser_train=build_parse(dataset,
@@ -322,7 +220,7 @@ def evaluate_attack(epsilons, root='', log='log', dataset='kmnist', metric='acc'
                                                                          with_norm=False),
                                                  batch_size=512)
 
-    acc_adv = keras.metrics.SparseCategoricalAccuracy(name='acc_adv')
+    acc_adv = tf.keras.metrics.SparseCategoricalAccuracy(name='acc_adv')
     if metric == 'acc':
         results = attacks.evaluate_model_after_attacks(epsilons, acc_adv, test_set, model, loss, method=method, steps=steps, x_min=0, x_max=1, model_src=model_src)
     elif metric == 'success':
@@ -336,9 +234,7 @@ def evaluate_attack(epsilons, root='', log='log', dataset='kmnist', metric='acc'
 
 def do_adv(root):
     import time
-    routing = 'EM'
     all_target = False
-    tempers = [0.0, 20.0, 40.0, 60.0, 80.0]
     methods = ['PGD', 'BIM', 'FGSM']
     datasets = ['fashion_mnist', 'svhn_cropped', 'cifar10']
     black_box = False
@@ -356,97 +252,20 @@ def do_adv(root):
                 epsilons = [0.1, 0.2, 0.3]
         for method in methods:
             print('method:', method)
-            if routing == 'avg' or routing == 'max':
-                tempers = [-1]
-            for temper in tempers:
-                print('temper:', temper)
-                t1 = time.time()
-                evaluate_attack(epsilons,
-                                root=root,
-                                log='log',
-                                dataset=dataset,
-                                metric='success',
-                                all_target=all_target,
-                                method=method,
-                                steps=10,
-                                routing=routing,
-                                in_fn=None,
-                                out_fn=None,
-                                in_norm=None,
-                                black_box=black_box,
-                                iter_num=2,
-                                temper=temper,
-                                atoms=16,
-                                idx=2)
-                t2 = time.time()
-                print('time:',t2-t1)
-
-
-def compute_entropy(root,
-                    log='log',
-                    dataset='cifar10',
-                    resblocks='333',
-                    in_fn=None,
-                    out_fn=None,
-                    in_norm=None,
-                    iter_num=2,
-                    activated=True,
-                    temper=10.0,
-                    atoms=16,
-                    routing='DR',
-                    idx=1):
-    import numpy as np
-    model_dir, data_shape, num_out, flip, crop = get_model_dir(dataset, root+log, resblocks=resblocks,
-                                                               routing=routing, in_fn=in_fn, out_fn=out_fn, in_norm=in_norm,
-                                                               iter_num=iter_num, temper=temper,
-                                                               atoms=atoms, idx=idx)
-    model = load_model(data_shape, model_dir, num_out, routing, iter_num, temper, atoms,
-                       resblocks=resblocks, input_norm=None)
-    _, test_set, info = data_input.build_dataset(dataset,
-                                                 path=root + 'data',
-                                                 parser_train=build_parse(dataset,
-                                                                          flip=False,
-                                                                          crop=False,
-                                                                          is_train=True),
-                                                 parser_test=build_parse(dataset,
-                                                                         is_train=False),
-                                                 batch_size=512)
-    test_model = keras.Model(model.layers[0].input, [model.layers[69].output, model.layers[71].output])
-    results = []
-    for images, labels in test_set:
-        (child_poses, child_probs), (parent_poses, parent_probs, cs) = test_model(images)
-        c = cs[-1]
-        if activated:
-            entropy = activated_entropy(c, child_probs)
-        else:
-            entropy = coupling_entropy(c)
-        results.append(entropy)
-    results = np.concatenate(results, 0)
-    mean = np.mean(results)
-    std = np.std(results)
-    print('{:.4}/{:.3}'.format(mean, std))
-
-
-def compute_entropies(root):
-    tempers = [0.0, 20.0, 40.0, 60.0, 80.0]
-    datasets = ['cifar10', 'svhn_cropped', 'fashion_mnist']
-    for dataset in datasets:
-        print('dataset:', dataset)
-        for temper in tempers:
-            print('temper:{}'.format(temper))
-            compute_entropy(root,
+            t1 = time.time()
+            evaluate_attack(epsilons,
+                            root=root,
                             log='log',
                             dataset=dataset,
-                            activated=False,
-                            routing='EM',
-                            in_fn=None,
-                            out_fn=None,
-                            in_norm=None,
-                            iter_num=2,
-                            temper=temper,
-                            atoms=16,
-                            idx=1)
+                            metric='success',
+                            all_target=all_target,
+                            method=method,
+                            steps=10,
+                            black_box=black_box)
+            t2 = time.time()
+            print('time:', t2-t1)
 
 
 if __name__ == "__main__":
+    utils.init_devices(True)
     main()
